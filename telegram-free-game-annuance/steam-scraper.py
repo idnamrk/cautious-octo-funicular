@@ -152,6 +152,7 @@ if __name__ == "__main__":
 
     bot_token = "your_bot_token_here"
     chat_id = "target_chat_id_here"
+    message_thread_id = "target_message_thread_id_here"  # Optional: Set this if you want to send messages in a specific thread
 
     for item in items:
         image_url = item.get("image", "") or "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/4165910/6e3f2fedcd1e7faa80fe3b5c349a62a73dde5d10/header.jpg"
@@ -163,6 +164,8 @@ if __name__ == "__main__":
             f"https://api.telegram.org/bot{bot_token}/sendPhoto"
             f"?chat_id={chat_id}&photo={escaped_image}&caption={escaped_caption}"
         )
+        if message_thread_id:
+            photo_url += f"&message_thread_id={message_thread_id}"
         try:
             with urllib.request.urlopen(photo_url, timeout=20) as response:
                 sent_ids.add(str(item.get("id", "")))

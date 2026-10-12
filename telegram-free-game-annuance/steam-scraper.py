@@ -11,6 +11,15 @@ URL = "https://store.steampowered.com/search/results/?force_infinite=1&maxprice=
 STORED_IDS_FILE = os.path.join(os.path.dirname(__file__), "steam_sent_ids.txt")
 
 
+def normalize_required_age(value) -> int:
+    if value is None:
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def extract_app_id(logo_link: str) -> str:
     if not logo_link:
         return ""
@@ -45,13 +54,21 @@ def fetch_app_metadata(app_id: str) -> dict:
     if not isinstance(payload, dict):
         return {}
 
+    ratings = payload.get("ratings", {}) if isinstance(payload.get("ratings", {}), dict) else {}
+    steam_germany = ratings.get("steam_germany", {}) if isinstance(ratings, dict) else {}
+    global_required_age = normalize_required_age(payload.get("required_age", 0))
+    steam_germany_required_age = normalize_required_age(steam_germany.get("required_age", 0))
+
     return {
         "type": payload.get("type", ""),
         "header_image": payload.get("header_image", ""),
+        "required_age": global_required_age,
+        "steam_germany_required_age": steam_germany_required_age,
+        "price_overview": payload.get("price_overview", {}),
     }
 
 
-def get_items() -> list[dict]:
+def get_items() -> list[dict] | None:
     request = urllib.request.Request(
         URL,
         headers={"User-Agent": "Mozilla/5.0"},
@@ -67,7 +84,7 @@ def get_items() -> list[dict]:
             with urllib.request.urlopen(request, timeout=20, context=unverified_context) as response:
                 data = json.load(response)
         except Exception:
-            return []
+            return None
 
     items = data.get("items")
     if not isinstance(items, list):
@@ -88,6 +105,16 @@ def get_items() -> list[dict]:
 
     return parsed_items
 
+# DEBUG: Uncomment the following function to use mock data for testing purposes
+# def mock_get_items() -> list[dict]:
+#     return [
+#         {
+#             "name": "Sample Game 1",
+#             "id": "123456",
+#             "link": "https://store.steampowered.com/app/123456/",
+#         }
+#     ]
+
 
 def enrich_items(items: list[dict]) -> list[dict]:
     for item in items:
@@ -95,6 +122,9 @@ def enrich_items(items: list[dict]) -> list[dict]:
         item["metadata"] = fetch_app_metadata(item_id)
         item["image"] = item["metadata"].get("header_image", "")
         item["type"] = item["metadata"].get("type", "")
+        item["required_age"] = item["metadata"].get("required_age", 0)
+        item["steam_germany_required_age"] = item["metadata"].get("steam_germany_required_age", 0)
+        item["price_overview"] = item["metadata"].get("price_overview", {})
 
     return items
 
@@ -117,6 +147,14 @@ def save_sent_ids(sent_ids: set[str]) -> None:
                 handle.write(f"{item_id}\n")
 
 
+def html_escape(text: str) -> str:
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
 def filter_new_items(items: list[dict], sent_ids: set[str]) -> list[dict]:
     return [item for item in items if str(item.get("id", "")) and str(item.get("id", "")) not in sent_ids]
 
@@ -128,6 +166,10 @@ def cleanup_sent_ids(items: list[dict], sent_ids: set[str]) -> set[str]:
 
 if __name__ == "__main__":
     items = get_items()
+    if items is None:
+        print("Fetch failed; aborting without changing sent IDs.")
+        raise SystemExit(1)
+
     sent_ids = load_sent_ids()
     sent_ids = cleanup_sent_ids(items, sent_ids)
 
@@ -157,13 +199,40 @@ if __name__ == "__main__":
     for item in items:
         image_url = item.get("image", "") or "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/4165910/6e3f2fedcd1e7faa80fe3b5c349a62a73dde5d10/header.jpg"
 
-        caption = f"{item.get('name', '')}\n{item.get('link', '')}"
+        item_type = str(item.get("type", "")).strip()
+        if item_type and item_type.lower() != "game":
+            title_prefix = f"[{item_type.upper()}] "
+        else:
+            title_prefix = ""
+
+        price_overview = item.get("price_overview") or {}
+        initial_price = str(price_overview.get("initial_formatted", "")).strip()
+        final_price = str(price_overview.get("final_formatted", "")).strip()
+
+        if initial_price and final_price and initial_price != final_price:
+            price_line = f"<s>{html_escape(initial_price)}</s> -> {html_escape(final_price)}"
+        elif final_price:
+            price_line = html_escape(final_price)
+        else:
+            price_line = ""
+
+        required_ages = [
+            item.get("required_age", 0),
+            item.get("steam_germany_required_age", 0),
+        ]
+        spoiler_enabled = any(normalize_required_age(age) >= 18 for age in required_ages)
+
+        caption = f"{html_escape(title_prefix)}{html_escape(item.get('name', ''))}\n{html_escape(item.get('link', ''))}"
+        if price_line:
+            caption = f"{caption}\n{price_line}"
         escaped_caption = quote(caption, safe="")
         escaped_image = quote(image_url, safe="")
         photo_url = (
             f"https://api.telegram.org/bot{bot_token}/sendPhoto"
-            f"?chat_id={chat_id}&photo={escaped_image}&caption={escaped_caption}"
+            f"?chat_id={chat_id}&photo={escaped_image}&caption={escaped_caption}&parse_mode=HTML"
         )
+        if spoiler_enabled:
+            photo_url += "&has_spoiler=true"
         if message_thread_id:
             photo_url += f"&message_thread_id={message_thread_id}"
         try:

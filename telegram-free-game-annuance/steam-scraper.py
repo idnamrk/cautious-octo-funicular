@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 
 import json
+import html
 import os
 import re
 import ssl
@@ -148,11 +149,7 @@ def save_sent_ids(sent_ids: set[str]) -> None:
 
 
 def html_escape(text: str) -> str:
-    return (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
+    return html.escape(html.unescape(text), quote=False)
 
 
 def filter_new_items(items: list[dict], sent_ids: set[str]) -> list[dict]:
